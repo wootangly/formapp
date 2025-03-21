@@ -1,0 +1,146 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: SAM template for ECS Fargate resources
+
+Resources:
+
+  # IAM Role for ECS Task Execution
+  ECSExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: ECSExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                  - 'logs:CreateLogGroup'
+                Resource: 'arn:aws:logs:*:*:*'
+              - Effect: Allow
+                Action:
+                  - 'ecr:GetDownloadUrlForLayer'
+                  - 'ecr:BatchGetImage'
+                  - 'ecr:BatchCheckLayerAvailability'
+                  - 'ecr:GetAuthorizationToken'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                Resource: '*'
+
+  # Application Load Balancer for the Web App
+  WebAppLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub '${AWS::StackName}-alb'
+      Scheme: internet-facing
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '30'
+      Subnets:
+        - subnet-0c72beed386f1f27e # Replace with actual subnet ID (us-west-2)
+        - subnet-00afc21a5f6246c6d # Replace with actual subnet ID (us-west-2)
+
+  # Target Group for Fargate Service
+  WebAppTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${AWS::StackName}-tg'
+      Protocol: HTTP
+      Port: 80
+      VpcId: vpc-0cfafdec60be85a2d # Replace with actual VPC ID (us-west-2)
+      TargetType: ip
+      HealthCheckPath: /
+      Matcher:
+        HttpCode: '200'
+
+  # Listener for the Load Balancer
+  WebAppListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref WebAppTargetGroup
+      LoadBalancerArn: !Ref WebAppLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  # Fargate Cluster
+  WebAppCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub '${AWS::StackName}-cluster'
+
+  # CloudWatch Log Group for ECS Task Logs
+  ECSLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/ecs/${AWS::StackName}-nginx'
+      RetentionInDays: 14  # Adjust as needed
+
+  # Fargate Task Definition for Nginx Docker Container
+  WebAppTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: WebAppTask
+      Cpu: '256'
+      Memory: '512'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt ECSExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: nginx-container
+          Image: '509399639343.dkr.ecr.us-west-2.amazonaws.com/formapp:3.0'  # Replace with actual ECR image URI {us-west-2}
+          PortMappings:
+            - ContainerPort: 80
+          Environment:
+            - Name: API_URL
+              Value: !ImportValue ApiGatewayEndpoint  # Import the API Gateway URL
+          Essential: true
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ECSLogGroup  # References the created ECS log group
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: nginx
+
+  # Fargate Service for the Web App
+  WebAppService:
+    Type: AWS::ECS::Service
+    DependsOn: 
+      - WebAppLoadBalancer
+      - WebAppTargetGroup
+      - WebAppListener
+    Properties:
+      Cluster: !Ref WebAppCluster
+      TaskDefinition: !Ref WebAppTaskDefinition
+      LaunchType: FARGATE
+      DesiredCount: 1
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: 
+            - subnet-0c72beed386f1f27e # Replace with actual subnet ID (us-west-2)
+            - subnet-00afc21a5f6246c6d # Replace with actual subnet ID (us-west-2)
+          SecurityGroups:
+            - sg-05c388d060013cf6e # Replace with an actual security group ID (us-west-2)
+          AssignPublicIp: ENABLED
+      LoadBalancers:
+        - TargetGroupArn: !Ref WebAppTargetGroup
+          ContainerName: nginx-container
+          ContainerPort: 80
+
+Outputs:
+  LoadBalancerURL:
+    Description: "URL of the Nginx frontend"
+    Value: !Sub 'http://${WebAppLoadBalancer.DNSName}'

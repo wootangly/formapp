@@ -1,0 +1,83 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: SAM template for API Gateway, Lambda, DynamoDB, and SQS
+
+Resources:
+  # API Gateway for Backend Communication
+  ApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: Prod
+      EndpointConfiguration: REGIONAL
+      Cors:
+        AllowMethods: "'OPTIONS,POST'"
+        AllowHeaders: "'Content-Type,Authorization'"
+        AllowOrigin: "'http://form.wootangly.com'"
+  # Lambda Function for Processing Transactions
+  TransactionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      CodeUri: ./src
+      MemorySize: 128
+      Timeout: 10
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref TransactionTable
+          QUEUE_URL: !GetAtt TransactionQueue.QueueUrl
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+              Resource: !GetAtt TransactionTable.Arn
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+                - sqs:TagQueue
+                - sqs:ListQueues
+                - sqs:SetQueueAttributes
+              Resource: !GetAtt TransactionQueue.Arn
+      Events:
+        ApiPost:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /transaction
+            Method: POST
+        ApiOptions:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ApiGateway
+            Path: /transaction
+            Method: OPTIONS
+  # DynamoDB Table for Logging Transactions
+  TransactionTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ${AWS::StackName}-transactions
+      AttributeDefinitions:
+        - AttributeName: transactionId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: transactionId
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  # SQS Queue for Messaging Control
+  TransactionQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub ${AWS::StackName}-transaction-queue
+
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway endpoint URL for transactions
+    Value: !Sub https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/Prod/transaction
+    Export:
+      Name: ApiGatewayEndpoint
